@@ -24,12 +24,16 @@
  izmedju zadataka pauza koju
  kontrolise ispitanik (nastavlja tipkom SPACE kad je spreman).
  SNIMANJE: odmah nakon svakog zadatka (trials + summary, isti fajlovi kao
- u pojedinacnim verzijama), preko DataPipe-a u isti folder na Google Driveu. Ako
- ispitanik odustane, ranije zavrseni zadaci su vec snimljeni.
+ u pojedinacnim verzijama) salju se preko DataPipe-a u isti folder na Google
+ Driveu. Ako slanje ne uspije, NISTA se ne preuzima usred baterije; na kraju
+ se slanje pokusa jos jednom, a tek ako ni tada ne uspije, ispitanik dobija
+ poruku i jedno dugme koje preuzme sve fajlove u jednom zip fajlu, uz molbu
+ da ga posalje e-mailom (CONTACT_EMAIL). Ako ispitanik odustane, ranije
+ zavrseni zadaci su vec poslani.
  Zbirna tabela (jedan red po ispitaniku): battery_scores.py.
 
- PODESAVANJE: DATAPIPE_ID (12 znakova sa pipe.jspsych.org). Prazno = podaci
- se nakon svakog zadatka preuzimaju na racunar (za testiranje).
+ PODESAVANJE: DATAPIPE_ID (12 znakova sa pipe.jspsych.org) i CONTACT_EMAIL.
+ Prazno DATAPIPE_ID = bez slanja; na kraju dugme za zip (za testiranje).
  Sifra ispitanika moze se poslati u linku: ?id=P01 (ili PROLIFIC_PID).
 ===============================================================================
 -->
@@ -54,6 +58,9 @@
   .blist { display: inline-block; text-align: left; margin: 2vh auto 3vh; white-space: normal; }
   .blist li { margin: 0.8vh 0; }
   .bfoot { margin-top: 5vh; font-size: 2.8vh; color: #ddd; }
+  .bsteps { display: inline-block; text-align: left; white-space: normal; }
+  .bsteps ol { margin: 1vh 0 2vh; } .bsteps li { margin: 0.8vh 0; }
+  .bbtn { font-size: 2.6vh; padding: 1.4vh 3.2vh; cursor: pointer; border-radius: 8px; border: none; background: #fff; color: #222; font-weight: bold; }
   .bdl { display: grid; grid-template-columns: repeat(2, auto); gap: 1.2vh 2vh; justify-content: center; margin-top: 2vh; }
   .bdl button { font-size: 2vh; padding: 1vh 2vh; cursor: pointer; border-radius: 6px; border: none; background: #fff; color: #222; }
   /* ---- WCST ---- */
@@ -124,24 +131,83 @@
 // =============================================================================
 // 1. PODESAVANJA BATERIJE
 // =============================================================================
-const DATAPIPE_ID = 'CVaCcYFQ5Z7D';      // DataPipe Experiment ID (pipe.jspsych.org); prazno = lokalno preuzimanje
+const DATAPIPE_ID = 'CVaCcYFQ5Z7D';      // DataPipe Experiment ID (pipe.jspsych.org); prazno = bez slanja (test)
+const CONTACT_EMAIL = 'kognitivnafleksibilnost@gmail.com';   // za rucno slanje podataka ako slanje ne uspije
 
 // =============================================================================
-// 2. ZAJEDNICKO STANJE
+// 2. ZAJEDNICKO STANJE I SLANJE PODATAKA
+//    - nakon svakog zadatka: slanje na DataPipe (do 3 pokusaja po fajlu);
+//      ako ne uspije, fajl se NE preuzima usred baterije, nego se pamti;
+//    - na kraju: jos jedan pokusaj slanja svega sto nije poslano;
+//    - tek ako ni tada ne uspije: poruka ispitaniku i JEDNO dugme koje
+//      preuzme sve fajlove spakovane u jedan zip (<sifra>_podaci_<datum>.zip).
 // =============================================================================
 const jsPsych = initJsPsych({});
 const BATTERY_START = new Date();
 const urlId = jsPsych.data.getURLVariable('id') || jsPsych.data.getURLVariable('PROLIFIC_PID') || '';
 let PARTICIPANT = '';
-let saveError = false;                   // greska pri slanju na server (bilo koji zadatak)
-const ALL_FILES = [];                    // [zadatak, ime fajla, sadrzaj] svih snimljenih fajlova
+let saveError = false;                   // true = neki fajl nije poslan ni nakon zavrsnog pokusaja
+const ALL_FILES = [];                    // {task, name, text, sent} svih fajlova baterije
 const bEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-function bDownload(name, text) {
-  const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
+const bPad = n => String(n).padStart(2, '0');
+const bStamp = d => `${d.getFullYear()}-${bPad(d.getMonth() + 1)}-${bPad(d.getDate())}_${bPad(d.getHours())}h${bPad(d.getMinutes())}.${bPad(d.getSeconds())}`;
+
+async function sendOne(name, text, tries = 3) {
+  if (!DATAPIPE_ID) return false;
+  for (let i = 0; i < tries; i++) {
+    try { const r = await jsPsychPipe.saveData(DATAPIPE_ID, name, text); if (r && !(r instanceof Error) && !r.error) return true; }
+    catch (e) { /* pokusaj ponovo */ }
+  }
+  return false;
 }
-window.batDownload = i => { const f = ALL_FILES[i]; if (f) bDownload(f[1], f[2]); };
+async function batSend(task, files) {             // poziva se na kraju svakog zadatka
+  for (const [name, text] of files) {
+    const f = { task, name, text, sent: false };
+    ALL_FILES.push(f);
+    f.sent = await sendOne(name, text);
+  }
+}
+async function batFinalSend() {                    // zavrsni pokusaj za sve sto nije poslano
+  for (const f of ALL_FILES) if (!f.sent) f.sent = await sendOne(f.name, f.text);
+  saveError = ALL_FILES.some(f => !f.sent);
+}
+
+// --- zip (bez kompresije) od svih fajlova, za rucno slanje ---
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function makeZip(entries) {                        // entries: [[ime, tekst]]
+  const enc = new TextEncoder(), parts = [], central = [];
+  let offset = 0;
+  const d = new Date(), dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+        dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  for (const [name, text] of entries) {
+    const nb = enc.encode(name), data = enc.encode('﻿' + text), crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+    lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true); lh.setUint32(14, crc, true);
+    lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, nb.length, true); lh.setUint16(28, 0, true);
+    parts.push(new Uint8Array(lh.buffer), nb, data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(10, 0, true); ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true); ch.setUint32(16, crc, true);
+    ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, nb.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(new Uint8Array(ch.buffer), nb);
+    offset += 30 + nb.length + data.length;
+  }
+  const csize = central.reduce((a, p) => a + p.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+  end.setUint32(12, csize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+}
+window.batDownloadZip = () => {
+  const blob = makeZip(ALL_FILES.map(f => [f.name, f.text]));
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `${PARTICIPANT.replace(/[^\w\-]/g, '_')}_podaci_${bStamp(BATTERY_START)}.zip`;
+  document.body.appendChild(a); a.click(); a.remove();
+};
 const batScreen = (text, footer = true) => ({
   type: jsPsychHtmlKeyboardResponse,
   stimulus: `<div class="bmsg">${bEsc(text)}${footer ? '<div class="bfoot">Pritisnite SPACE (razmaknicu) za nastavak.</div>' : ''}</div>`,
@@ -439,16 +505,7 @@ async function saveAll() {
   out.push(['note', 'Bodovanje prema Heaton i sar. (1993), stablo odlucivanja Howlett i Moseley (2024); primarne mjere prema Miles i sar. (2021); wcst_scoring.py verzija 2; online verzija (jsPsych)', '']);
   const base = `${PARTICIPANT.replace(/[^\w\-]/g, '_')}_WCST_${stamp(START)}`;
   const files = [[base + '_trials.csv', trials], [base + '_summary.csv', toCSV(out)]];
-  ALL_FILES.push(...files.map(f => [TASK_LABEL, ...f]));
-  if (!DATAPIPE_ID) { files.forEach(([nm, t]) => download(nm, t)); return; }
-  for (const [nm, t] of files) {
-    let ok = false;
-    for (let i = 0; i < 3 && !ok; i++) {
-      try { const r = await jsPsychPipe.saveData(DATAPIPE_ID, nm, t); ok = !!(r && !(r instanceof Error) && !r.error); }
-      catch (e) { ok = false; }
-    }
-    if (!ok) { saveError = true; download(nm, t); }
-  }
+  await batSend(TASK_LABEL, files);   // BATERIJA: slanje (vidi odjeljak 2 baterije)
 }
 
 
@@ -732,16 +789,7 @@ async function saveAll() {
                     'definicije u nlt_scoring.py (verzija 2); online verzija (jsPsych)', '', '']);
   const base = `${PARTICIPANT.replace(/[^\w\-]/g, '_')}_NLT_${stamp(START)}`;
   const files = [[base + '_trials.csv', trials], [base + '_summary.csv', toCSV(out)]];
-  ALL_FILES.push(...files.map(f => [TASK_LABEL, ...f]));
-  if (!DATAPIPE_ID) { files.forEach(([nm, t]) => download(nm, t)); return; }
-  for (const [nm, t] of files) {
-    let ok = false;
-    for (let i = 0; i < 3 && !ok; i++) {
-      try { const r = await jsPsychPipe.saveData(DATAPIPE_ID, nm, t); ok = !!(r && !(r instanceof Error) && !r.error); }
-      catch (e) { ok = false; }
-    }
-    if (!ok) { saveError = true; download(nm, t); }
-  }
+  await batSend(TASK_LABEL, files);   // BATERIJA: slanje (vidi odjeljak 2 baterije)
 }
 
 
@@ -1156,16 +1204,7 @@ async function saveAll() {
     'Definicije mjera: prl_scoring.py (verzija 3). Online verzija (jsPsych).', '']);
   const base = `${PARTICIPANT.replace(/[^\w\-]/g, '_')}_PRL_${stamp(START)}`;
   const files = [[base + '_trials.csv', trials], [base + '_summary.csv', toCSV(out)]];
-  ALL_FILES.push(...files.map(f => [TASK_LABEL, ...f]));
-  if (!DATAPIPE_ID) { files.forEach(([n, t]) => download(n, t)); return; }
-  for (const [n, t] of files) {
-    let ok = false;
-    for (let i = 0; i < 3 && !ok; i++) {
-      try { const r = await jsPsychPipe.saveData(DATAPIPE_ID, n, t); ok = !!(r && !(r instanceof Error) && !r.error); }
-      catch (e) { ok = false; }
-    }
-    if (!ok) { saveError = true; download(n, t); }   // rezerva: preuzimanje na racunar
-  }
+  await batSend(TASK_LABEL, files);   // BATERIJA: slanje (vidi odjeljak 2 baterije)
 }
 
 
@@ -1267,19 +1306,27 @@ timeline.push(batScreen('DRUGI ZADATAK JE ZAVRŠEN.\n\nMožete napraviti kratku 
 timeline.push(ANNOUNCE('TREĆI'));
 timeline.push(PRL);
 
-const KIND = n => (n.endsWith('_trials.csv') ? 'pokušaji' : 'sažetak');
+// zavrsni pokusaj slanja svega sto ranije nije poslano (ispitanik vidi samo "Cuvanje podataka...")
+timeline.push({
+  type: jsPsychHtmlKeyboardResponse,
+  on_start: () => { document.body.className = 't-bat'; },
+  stimulus: '<div class="bmsg">Čuvanje podataka...\nMolimo ne zatvarajte ovaj prozor.</div>',
+  choices: 'NO_KEYS',
+  on_load: () => { batFinalSend().finally(() => jsPsych.finishTrial()); }
+});
 timeline.push({
   type: jsPsychHtmlKeyboardResponse,
   on_start: () => { document.body.className = 't-bat'; },
   stimulus: () => {
-    const done = `SVI ZADACI SU ZAVRŠENI!\n\nU posljednjem zadatku osvojili ste ukupno ${PRL.points()} bodova.\n\nHvala na učešću!`;
-    if (DATAPIPE_ID && !saveError) return `<div class="bmsg">${bEsc(done + '\nSada možete zatvoriti ovaj prozor.')}</div>`;
-    const head = saveError
-      ? 'Greška pri čuvanju podataka na server.\nPodaci su preuzeti na vaš računar. Molimo pošaljite ih eksperimentatoru.'
-      : done + '\n\nPodaci su preuzeti u folder Preuzimanja (Downloads):';
-    return `<div class="bmsg small" style="cursor:default">${bEsc(head + '\n' + ALL_FILES.map(f => f[1]).join('\n') +
-      '\n\nAko fajlova nema u tom folderu, kliknite dugmad ispod.')}<div class="bdl">` +
-      ALL_FILES.map((f, i) => `<button onclick="batDownload(${i})">${f[0]} – ${KIND(f[1])}</button>`).join('') + '</div></div>';
+    if (!saveError) return `<div class="bmsg">${bEsc(`SVI ZADACI SU ZAVRŠENI!\n\nU posljednjem zadatku osvojili ste ukupno ${PRL.points()} bodova.\n\n` +
+      'Hvala na učešću!\nSada možete zatvoriti ovaj prozor.')}</div>`;
+    return '<div class="bmsg" style="cursor:default">Zadaci su završeni. Hvala na učešću!\n\n' +
+      'Nažalost, vaši odgovori nisu mogli biti automatski poslani (npr. zbog prekida internet veze).\n\n' +
+      '<div class="bsteps">Molimo vas:<ol>' +
+      '<li>kliknite dugme <b>„Preuzmi podatke“</b>: na vaš računar snimit će se jedan fajl;</li>' +
+      `<li>pošaljite taj fajl e-mailom na adresu s koje ste dobili link za istraživanje ili na <b>${bEsc(CONTACT_EMAIL)}</b>.</li>` +
+      '</ol></div>Hvala vam na pomoći!' +
+      '<div style="margin-top:3vh"><button class="bbtn" onclick="batDownloadZip()">Preuzmi podatke</button></div></div>';
   },
   choices: 'NO_KEYS',
   on_load: () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); }
