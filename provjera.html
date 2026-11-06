@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="bs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Provjera slanja podataka</title>
+<!-- Provjera DataPipe veze: salje jedan mali probni CSV fajl i prikazuje odgovor servera.
+     Isti nacin slanja kao u bateriji (index.html). Nije za ispitanike. -->
+<script src="https://cdn.jsdelivr.net/npm/@jspsych-contrib/plugin-pipe@0.5.0/dist/index.browser.min.js"></script>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; background: #f4f6f9; color: #222; margin: 0; padding: 40px 16px; }
+  .box { max-width: 640px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 28px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  button { font-size: 18px; padding: 10px 22px; border: none; border-radius: 6px; background: #2f5496; color: #fff; cursor: pointer; }
+  button:disabled { background: #999; }
+  #out { margin-top: 20px; padding: 14px; border-radius: 6px; white-space: pre-wrap; display: none; }
+  .ok { background: #e6f4e2; border-left: 5px solid #548235; }
+  .err { background: #fdecea; border-left: 5px solid #c0392b; }
+  code { background: #eee; padding: 2px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>Provjera slanja podataka (DataPipe)</h2>
+  <p>Klikom na dugme šalje se jedan mali probni fajl (<code>PROVJERA_…csv</code>, sadržaj: <code>a,b / 1,2</code>)
+     na DataPipe eksperiment <code id="eid"></code>, isto kao što to radi baterija.</p>
+  <button id="btn">Pošalji probni fajl</button>
+  <div id="out"></div>
+</div>
+<script>
+const DATAPIPE_ID = '27ikA4cIvBzT';
+document.getElementById('eid').textContent = DATAPIPE_ID;
+const pad = n => String(n).padStart(2, '0');
+document.getElementById('btn').onclick = async () => {
+  const btn = document.getElementById('btn'), out = document.getElementById('out');
+  btn.disabled = true; out.style.display = 'block'; out.className = ''; out.textContent = 'Šaljem...';
+  const d = new Date();
+  const name = `PROVJERA_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}h${pad(d.getMinutes())}.${pad(d.getSeconds())}.csv`;
+  let r;
+  try { r = await jsPsychPipe.saveData(DATAPIPE_ID, name, 'a,b\r\n1,2\r\n'); } catch (e) { r = e; }
+  const text = r instanceof Error ? 'Greška u vezi: ' + r.message : JSON.stringify(r, null, 1);
+  if (r && !(r instanceof Error) && !r.error) {
+    out.className = 'ok';
+    out.textContent = 'USPJEŠNO. Server je primio fajl ' + name + '.\nProvjerite Google Drive (DataPipe → Open folder), a zatim obrišite probni fajl.\n\nOdgovor servera:\n' + text;
+  } else {
+    out.className = 'err';
+    out.textContent = 'NIJE USPJELO. Pošaljite ovu poruku (snimak ekrana).\n\nOdgovor servera:\n' + text;
+  }
+  btn.disabled = false;
+};
+</script>
+</body>
+</html>
